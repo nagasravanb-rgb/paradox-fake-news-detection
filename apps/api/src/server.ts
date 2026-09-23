@@ -95,6 +95,16 @@ function auditId() {
   return newId("audit");
 }
 
+async function executionForRequest(req: { user?: { sub?: string }; headers: Record<string, string | string[] | undefined> }, executionId: string) {
+  const context = await resolveExecutionContext(req);
+  if (!context) return null;
+  return prisma.execution.findFirst({
+    where: context.organizationId
+      ? { id: executionId, organizationId: context.organizationId }
+      : { id: executionId, userId: context.userId, organizationId: null },
+  });
+}
+
 async function writeAudit(input: {
   organizationId?: string;
   caseId?: string;
@@ -293,7 +303,7 @@ app.post("/api/v1/decision", async (req, reply) => {
 
 app.get("/api/v1/executions/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
-  const row = await prisma.execution.findUnique({ where: { id } });
+  const row = await executionForRequest(req, id);
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND", message: "execution not found" } });
   return JSON.parse(row.payload);
 });
@@ -314,6 +324,8 @@ app.get("/api/v1/claims/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.claimRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
@@ -321,6 +333,8 @@ app.get("/api/v1/evidence/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.evidenceRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
@@ -328,6 +342,8 @@ app.get("/api/v1/graphs/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.graphRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
