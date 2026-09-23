@@ -2,7 +2,7 @@ name: PARADOX CI
 
 on:
   push:
-    branches: ["paradox-complete"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -17,6 +17,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run db:generate
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
