@@ -1,0 +1,19 @@
+{
+  "name": "@paradox/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@paradox/shared": "0.1.0",
+    "@paradox/providers": "0.1.0",
+    "@paradox/verification": "0.1.0",
+    "@paradox/research": "0.1.0",
+    "@paradox/situation": "0.1.0",
+    "@paradox/decision": "0.1.0",
+    "@paradox/fusion": "0.1.0",
+    "@paradox/truth-shift": "0.1.0",
+    "@paradox/multimodal": "0.1.0",
+    "@paradox/graphs": "0.1.0"
+  }
+}

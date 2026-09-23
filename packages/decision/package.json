@@ -1,0 +1,12 @@
+{
+  "name": "@paradox/decision",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@paradox/shared": "0.1.0",
+    "@paradox/situation": "0.1.0",
+    "@paradox/providers": "0.1.0"
+  }
+}

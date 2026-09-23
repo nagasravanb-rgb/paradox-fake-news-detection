@@ -1,0 +1,11 @@
+{
+  "name": "@paradox/evaluation",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@paradox/shared": "0.1.0",
+    "@paradox/calibration": "0.1.0"
+  }
+}
