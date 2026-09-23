@@ -8,45 +8,133 @@ datasource db {
 }
 
 model User {
-  id           String   @id
-  email        String   @unique
+  id           String         @id
+  email        String         @unique
   passwordHash String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime       @default(now())
+  memberships  Membership[]
+  cases        Case[]         @relation("CaseCreator")
+  auditEvents  AuditEvent[]
+}
+
+model Organization {
+  id          String       @id
+  name        String
+  slug        String       @unique
+  plan        String       @default("TEAM")
+  createdAt   DateTime     @default(now())
+  memberships Membership[]
+  workspaces  Workspace[]
+  cases       Case[]
+  auditEvents AuditEvent[]
+}
+
+model Membership {
+  id             String       @id
+  userId         String
+  organizationId String
+  role           String       @default("ANALYST")
+  createdAt      DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Workspace {
+  id             String       @id
+  organizationId String
+  name           String
+  slug           String
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cases          Case[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+}
+
+model Case {
+  id             String       @id
+  organizationId String?
+  workspaceId    String?
+  createdById    String
+  title          String
+  description    String
+  status         String       @default("OPEN")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace      Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("CaseCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  auditEvents    AuditEvent[]
+
+  @@index([organizationId])
+  @@index([workspaceId])
+  @@index([createdById])
+}
+
+model AuditEvent {
+  id             String        @id
+  organizationId String?
+  caseId         String?
+  actorUserId    String?
+  action         String
+  resourceType   String
+  resourceId     String
+  metadata       String
+  createdAt      DateTime      @default(now())
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case           Case?         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actor          User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([caseId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 model Execution {
-  id        String   @id
-  requestId String
-  engine    String
-  status    String
-  payload   String
-  createdAt DateTime @default(now())
+  id             String   @id
+  requestId      String
+  engine         String
+  status         String
+  payload        String
+  organizationId String?
+  workspaceId    String?
+  caseId         String?
+  userId         String?
+  createdAt      DateTime @default(now())
 
   @@index([engine])
   @@index([createdAt])
+  @@index([organizationId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([caseId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model ClaimRow {
-  id        String   @id
+  id          String   @id
   executionId String
-  json      String
-  createdAt DateTime @default(now())
+  json        String
+  createdAt   DateTime @default(now())
   @@index([executionId])
 }
 
 model EvidenceRow {
-  id        String   @id
+  id          String   @id
   executionId String
-  json      String
-  createdAt DateTime @default(now())
+  json        String
+  createdAt   DateTime @default(now())
   @@index([executionId])
 }
 
 model GraphRow {
-  id        String   @id
+  id          String   @id
   executionId String
-  json      String
-  createdAt DateTime @default(now())
+  json        String
+  createdAt   DateTime @default(now())
   @@index([executionId])
 }
 
