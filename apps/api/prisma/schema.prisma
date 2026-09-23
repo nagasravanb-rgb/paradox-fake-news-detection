@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model Execution {
+  id        String   @id
+  requestId String
+  engine    String
+  status    String
+  payload   String
+  createdAt DateTime @default(now())
+
+  @@index([engine])
+  @@index([createdAt])
+}
+
+model ClaimRow {
+  id        String   @id
+  executionId String
+  json      String
+  createdAt DateTime @default(now())
+  @@index([executionId])
+}
+
+model EvidenceRow {
+  id        String   @id
+  executionId String
+  json      String
+  createdAt DateTime @default(now())
+  @@index([executionId])
+}
+
+model GraphRow {
+  id        String   @id
+  executionId String
+  json      String
+  createdAt DateTime @default(now())
+  @@index([executionId])
+}
+
+model TruthShiftRow {
+  id        String   @id
+  claimId   String
+  json      String
+  createdAt DateTime @default(now())
+  @@index([claimId])
+}
+
+model OutcomeRow {
+  id          String   @id
+  executionId String
+  predicted   Float
+  observed    Float
+  recordedAt  DateTime @default(now())
+  @@index([executionId])
+}
+
+model EvalLabel {
+  id        String @id
+  predicted String
+  gold      String
+}
