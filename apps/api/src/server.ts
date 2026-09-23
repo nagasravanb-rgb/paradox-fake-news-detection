@@ -65,6 +65,32 @@ async function requireMembership(req: { user?: { sub?: string } }, organizationI
   return membership;
 }
 
+
+async function resolveExecutionContext(req: { user?: { sub?: string }; headers: Record<string, string | string[] | undefined> }) {
+  const userId = currentUserId(req);
+  const organizationHeader = req.headers["x-paradox-organization-id"];
+  const workspaceHeader = req.headers["x-paradox-workspace-id"];
+  const caseHeader = req.headers["x-paradox-case-id"];
+  const organizationId = typeof organizationHeader === "string" ? organizationHeader : undefined;
+  const workspaceId = typeof workspaceHeader === "string" ? workspaceHeader : undefined;
+  const caseId = typeof caseHeader === "string" ? caseHeader : undefined;
+
+  if (organizationId) {
+    if (!userId || !await requireMembership(req, organizationId)) return null;
+    if (workspaceId) {
+      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, organizationId } });
+      if (!workspace) return null;
+    }
+    if (caseId) {
+      const caseRow = await prisma.case.findFirst({ where: { id: caseId, organizationId } });
+      if (!caseRow) return null;
+    }
+    return { userId, organizationId, workspaceId, caseId };
+  }
+
+  return { userId: userId ?? undefined, organizationId: undefined, workspaceId: undefined, caseId: undefined };
+}
+
 function auditId() {
   return newId("audit");
 }
@@ -218,42 +244,50 @@ app.get("/api/v1/organizations/:id/audit", async (req, reply) => {
 
 
 app.post("/api/v1/verify", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = verifyRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.verify(parsed.data.text, parsed.data.modality, parsed.data.asOf);
-  await persist("VERIFICATION", result);
+  await persist("VERIFICATION", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/research", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = researchRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.research(parsed.data.question);
-  await persist("RESEARCH", result);
+  await persist("RESEARCH", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/situation", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = situationRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.situation(parsed.data.description);
-  await persist("SITUATION", result);
+  await persist("SITUATION", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/decision", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = decisionRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.decision(parsed.data);
-  await persist("DECISION", result);
+  await persist("DECISION", result, executionContext);
   return result;
 });
 
@@ -264,8 +298,15 @@ app.get("/api/v1/executions/:id", async (req, reply) => {
   return JSON.parse(row.payload);
 });
 
-app.get("/api/v1/executions", async () => {
-  const rows = await prisma.execution.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+app.get("/api/v1/executions", async (req, reply) => {
+  const context = await resolveExecutionContext(req);
+  if (!context) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  const organizationId = context.organizationId;
+  const rows = await prisma.execution.findMany({
+    where: organizationId ? { organizationId } : { userId: context.userId, organizationId: null },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
   return rows.map((r: typeof rows[number]) => ({ id: r.id, engine: r.engine, status: r.status, createdAt: r.createdAt }));
 });
 
@@ -362,7 +403,11 @@ app.get("/api/v1/settings", async () => ({
   wikipediaEnabled: true,
 }));
 
-async function persist(engine: string, result: { executionId: string; requestId?: string; status?: string; claims?: unknown[]; evidence?: unknown[]; graph?: { id: string } }) {
+async function persist(
+  engine: string,
+  result: { executionId: string; requestId?: string; status?: string; claims?: unknown[]; evidence?: unknown[]; graph?: { id: string } },
+  context: { userId?: string; organizationId?: string; workspaceId?: string; caseId?: string },
+) {
   const payload = JSON.stringify(result);
   await prisma.execution.create({
     data: {
@@ -371,6 +416,10 @@ async function persist(engine: string, result: { executionId: string; requestId?
       engine,
       status: result.status ?? "UNKNOWN",
       payload,
+      userId: context.userId,
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      caseId: context.caseId,
     },
   });
   for (const c of result.claims ?? []) {
