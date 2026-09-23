@@ -1,0 +1,15 @@
+{
+  "buildCommand": "npm run build --workspace=@paradox/web",
+  "outputDirectory": "apps/web/dist",
+  "installCommand": "npm install",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://paradox-fake-4.onrender.com/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://paradox-fake-4.onrender.com/health"
+    }
+  ]
+}
