@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { api } from "./lib/api";
+import { OrganizationWorkspace } from "./components/OrganizationWorkspace";
 
 type Mode = "verify" | "research" | "situation" | "decision";
 type View = "home" | "history" | "about";
+type ProductSurface = "personal" | "organization";
 type JsonObject = Record<string, unknown>;
 
 type HistoryItem = {
@@ -443,11 +445,14 @@ export function App() {
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("paradox-theme") === "dark");
+  const [surface, setSurface] = useState<ProductSurface>(() => localStorage.getItem("paradox-surface") === "organization" ? "organization" : "personal");
 
   useEffect(() => {
     document.documentElement.dataset.theme = darkMode ? "dark" : "light";
     localStorage.setItem("paradox-theme", darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  useEffect(() => { localStorage.setItem("paradox-surface", surface); }, [surface]);
 
   const selectedMode = useMemo(() => MODES.find((item) => item.id === mode) ?? MODES[0], [mode]);
 
@@ -562,6 +567,9 @@ export function App() {
         </nav>
 
         <div className="top-actions">
+          <button className="surface-switch" onClick={() => { setSurface(surface === "personal" ? "organization" : "personal"); setView("home"); setResult(null); setError(""); }} type="button" aria-label="Switch PARADOX product surface">
+            <span className={surface === "personal" ? "active" : ""}>Personal</span><span className={surface === "organization" ? "active" : ""}>Organizations</span>
+          </button>
           <button className="icon-button" onClick={() => setDarkMode((value) => !value)} aria-label={darkMode ? "Switch to light theme" : "Switch to dark theme"} type="button"><Icon name="sun" /></button>
           <button className="mobile-menu" onClick={() => setMobileNavOpen((value) => !value)} aria-label="Open menu" type="button"><Icon name="menu" /></button>
         </div>
@@ -574,7 +582,8 @@ export function App() {
       </div>}
 
       <main className="page">
-        {view === "home" && <>
+        {surface === "organization" ? <OrganizationWorkspace onExit={() => { setSurface("personal"); setView("home"); }} /> : null}
+        {surface === "personal" && view === "home" && <>
           <section className="hero">
             <div className="hero-copy">
               <div className="status-chip"><span className="status-dot" /> Evidence first · four engines</div>
@@ -624,13 +633,13 @@ export function App() {
           {(busy || result) && <section className="analysis-area">{busy ? <ProgressPanel progress={progress} /> : result ? <PillarResult mode={mode} result={result} /> : null}</section>}
         </>}
 
-        {view === "history" && <section className="content-page">
+        {surface === "personal" && view === "history" && <section className="content-page">
           <div className="content-page-header"><div><span className="eyebrow">Your workspace</span><h1>Investigation history</h1><p>Recent questions are stored locally in this browser.</p></div>{history.length > 0 && <button className="secondary-button danger-button" onClick={clearHistory} type="button">Clear history</button>}</div>
           {!history.length ? <div className="empty-state"><div className="empty-icon"><Icon name="history" /></div><h3>No investigations yet</h3><p>Your recent PARADOX requests will appear here.</p><button className="primary-button" onClick={goHome} type="button">Start an investigation <Icon name="arrow" /></button></div>
             : <div className="history-list">{history.map((item) => <button className="history-item" key={item.id} onClick={() => restoreHistory(item)} type="button"><div className="history-icon">{item.mode.slice(0, 1).toUpperCase()}</div><div className="history-main"><div className="history-meta"><span>{item.mode}</span><time>{formatDate(item.createdAt)}</time></div><strong>{item.input}</strong><small>{item.preview}</small></div><Icon name="arrow" /></button>)}</div>}
         </section>}
 
-        {view === "about" && <section className="content-page about-page">
+        {surface === "personal" && view === "about" && <section className="content-page about-page">
           <div className="content-page-header"><div><span className="eyebrow">PARADOX architecture</span><h1>Evidence before certainty.</h1><p>The user-facing layer exposes the actual engine outputs instead of reducing every request to a single generic answer.</p></div></div>
           <div className="about-grid">
             <article className="about-card"><span className="about-number">01</span><h3>Verification engine</h3><p>Claim extraction → evidence retrieval → relevance → source quality → source independence/lineage → evidence weighting → verification → adversarial self-verification.</p></article>
