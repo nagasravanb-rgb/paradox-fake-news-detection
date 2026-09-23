@@ -24,6 +24,7 @@ loadDotEnv();
 const prisma = new PrismaClient();
 const orchestrator = new ParadoxOrchestrator(configFromEnv(process.env), process.env);
 const authRequired = (process.env.AUTH_REQUIRED ?? "false") === "true";
+const productAuthRequired = (process.env.PRODUCT_AUTH_REQUIRED ?? "false") === "true";
 const jwtSecret = process.env.JWT_SECRET || "dev-only-insecure";
 
 const app = Fastify({ logger: { level: process.env.PARADOX_LOG_LEVEL || "info" } });
@@ -38,7 +39,7 @@ await app.register(jwt, { secret: jwtSecret });
 
 app.addHook("onRequest", async (req, reply) => {
   (req as { requestId?: string }).requestId = req.id;
-  if (!authRequired) return;
+  if (!authRequired && !productAuthRequired) return;
   if (req.url.startsWith("/api/v1/auth") || req.url === "/health") return;
   try {
     await req.jwtVerify();
@@ -48,6 +49,85 @@ app.addHook("onRequest", async (req, reply) => {
 });
 
 app.get("/health", async () => ({ ok: true, service: "paradox-api" }));
+type AuthRequest = typeof app extends never ? never : { user?: { sub?: string } };
+function currentUserId(req: { user?: { sub?: string } }): string | null {
+  return req.user?.sub ?? null;
+}
+
+async function requireMembership(req: { user?: { sub?: string } }, organizationId: string, roles?: string[]) {
+  const userId = currentUserId(req);
+  if (!userId) return null;
+  const membership = await prisma.membership.findUnique({
+    where: { userId_organizationId: { userId, organizationId } },
+  });
+  if (!membership) return null;
+  if (roles && !roles.includes(membership.role)) return null;
+  return membership;
+}
+
+
+async function resolveExecutionContext(req: { user?: { sub?: string }; headers: Record<string, string | string[] | undefined> }) {
+  const userId = currentUserId(req);
+  const organizationHeader = req.headers["x-paradox-organization-id"];
+  const workspaceHeader = req.headers["x-paradox-workspace-id"];
+  const caseHeader = req.headers["x-paradox-case-id"];
+  const organizationId = typeof organizationHeader === "string" ? organizationHeader : undefined;
+  const workspaceId = typeof workspaceHeader === "string" ? workspaceHeader : undefined;
+  const caseId = typeof caseHeader === "string" ? caseHeader : undefined;
+
+  if (organizationId) {
+    if (!userId || !await requireMembership(req, organizationId)) return null;
+    if (workspaceId) {
+      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, organizationId } });
+      if (!workspace) return null;
+    }
+    if (caseId) {
+      const caseRow = await prisma.case.findFirst({ where: { id: caseId, organizationId } });
+      if (!caseRow) return null;
+    }
+    return { userId, organizationId, workspaceId, caseId };
+  }
+
+  return { userId: userId ?? undefined, organizationId: undefined, workspaceId: undefined, caseId: undefined };
+}
+
+function auditId() {
+  return newId("audit");
+}
+
+async function executionForRequest(req: { user?: { sub?: string }; headers: Record<string, string | string[] | undefined> }, executionId: string) {
+  const context = await resolveExecutionContext(req);
+  if (!context) return null;
+  return prisma.execution.findFirst({
+    where: context.organizationId
+      ? { id: executionId, organizationId: context.organizationId }
+      : { id: executionId, userId: context.userId, organizationId: null },
+  });
+}
+
+async function writeAudit(input: {
+  organizationId?: string;
+  caseId?: string;
+  actorUserId?: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  metadata?: Record<string, unknown>;
+}) {
+  await prisma.auditEvent.create({
+    data: {
+      id: auditId(),
+      organizationId: input.organizationId,
+      caseId: input.caseId,
+      actorUserId: input.actorUserId,
+      action: input.action,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId,
+      metadata: JSON.stringify(input.metadata ?? {}),
+    },
+  });
+}
+
 
 app.post("/api/v1/auth/register", async (req, reply) => {
   const body = req.body as { email?: string; password?: string };
@@ -75,56 +155,168 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   const token = await reply.jwtSign({ sub: user.id, email: user.email });
   return { token };
 });
+app.get("/api/v1/me", async (req, reply) => {
+  const userId = currentUserId(req);
+  if (!userId) return reply.code(401).send({ error: { code: "UNAUTHORIZED" } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, createdAt: true, memberships: { select: { role: true, organization: { select: { id: true, name: true, slug: true, plan: true } } } } },
+  });
+  if (!user) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  return user;
+});
+
+app.post("/api/v1/organizations", async (req, reply) => {
+  const userId = currentUserId(req);
+  if (!userId) return reply.code(401).send({ error: { code: "UNAUTHORIZED" } });
+  const body = req.body as { name?: string; slug?: string; plan?: string };
+  const name = body.name?.trim();
+  const slug = body.slug?.trim().toLowerCase();
+  if (!name || !slug || !/^[a-z0-9-]{3,48}$/.test(slug)) {
+    return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "name and slug are required; slug must be 3-48 lowercase letters, numbers or hyphens" } });
+  }
+  try {
+    const organization = await prisma.organization.create({
+      data: {
+        id: newId("org"),
+        name,
+        slug,
+        plan: body.plan === "ENTERPRISE" ? "ENTERPRISE" : "TEAM",
+        memberships: { create: { id: newId("mem"), userId, role: "OWNER" } },
+        workspaces: { create: { id: newId("wsp"), name: "Default workspace", slug: "default" } },
+      },
+      include: { workspaces: true },
+    });
+    await writeAudit({ organizationId: organization.id, actorUserId: userId, action: "ORGANIZATION_CREATED", resourceType: "ORGANIZATION", resourceId: organization.id });
+    return reply.code(201).send(organization);
+  } catch {
+    return reply.code(409).send({ error: { code: "CONFLICT", message: "organization slug exists" } });
+  }
+});
+
+app.get("/api/v1/organizations/:id", async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  if (!await requireMembership(req, id)) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  const organization = await prisma.organization.findUnique({
+    where: { id },
+    include: { workspaces: true, memberships: { select: { id: true, userId: true, role: true, createdAt: true } } },
+  });
+  if (!organization) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  return organization;
+});
+
+app.post("/api/v1/organizations/:id/workspaces", async (req, reply) => {
+  const organizationId = (req.params as { id: string }).id;
+  const membership = await requireMembership(req, organizationId, ["OWNER", "ADMIN"]);
+  if (!membership) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  const body = req.body as { name?: string; slug?: string };
+  const name = body.name?.trim();
+  const slug = body.slug?.trim().toLowerCase();
+  if (!name || !slug || !/^[a-z0-9-]{2,48}$/.test(slug)) return reply.code(400).send({ error: { code: "VALIDATION_ERROR" } });
+  try {
+    const workspace = await prisma.workspace.create({ data: { id: newId("wsp"), organizationId, name, slug } });
+    await writeAudit({ organizationId, actorUserId: currentUserId(req) ?? undefined, action: "WORKSPACE_CREATED", resourceType: "WORKSPACE", resourceId: workspace.id });
+    return reply.code(201).send(workspace);
+  } catch {
+    return reply.code(409).send({ error: { code: "CONFLICT", message: "workspace slug exists" } });
+  }
+});
+
+app.post("/api/v1/organizations/:id/cases", async (req, reply) => {
+  const organizationId = (req.params as { id: string }).id;
+  const membership = await requireMembership(req, organizationId, ["OWNER", "ADMIN", "ANALYST"]);
+  if (!membership) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  const body = req.body as { title?: string; description?: string; workspaceId?: string };
+  const title = body.title?.trim();
+  if (!title) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "title is required" } });
+  if (body.workspaceId) {
+    const workspace = await prisma.workspace.findFirst({ where: { id: body.workspaceId, organizationId } });
+    if (!workspace) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "workspace does not belong to organization" } });
+  }
+  const caseRow = await prisma.case.create({
+    data: { id: newId("case"), organizationId, workspaceId: body.workspaceId, createdById: currentUserId(req)!, title, description: body.description?.trim() ?? "" },
+  });
+  await writeAudit({ organizationId, caseId: caseRow.id, actorUserId: currentUserId(req)!, action: "CASE_CREATED", resourceType: "CASE", resourceId: caseRow.id });
+  return reply.code(201).send(caseRow);
+});
+
+app.get("/api/v1/organizations/:id/cases", async (req, reply) => {
+  const organizationId = (req.params as { id: string }).id;
+  if (!await requireMembership(req, organizationId)) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  return prisma.case.findMany({ where: { organizationId }, orderBy: { updatedAt: "desc" }, take: 100 });
+});
+
+app.get("/api/v1/organizations/:id/audit", async (req, reply) => {
+  const organizationId = (req.params as { id: string }).id;
+  if (!await requireMembership(req, organizationId, ["OWNER", "ADMIN", "REVIEWER"])) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  return prisma.auditEvent.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" }, take: 200 });
+});
+
 
 app.post("/api/v1/verify", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = verifyRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.verify(parsed.data.text, parsed.data.modality, parsed.data.asOf);
-  await persist("VERIFICATION", result);
+  await persist("VERIFICATION", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/research", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = researchRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.research(parsed.data.question);
-  await persist("RESEARCH", result);
+  await persist("RESEARCH", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/situation", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = situationRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.situation(parsed.data.description);
-  await persist("SITUATION", result);
+  await persist("SITUATION", result, executionContext);
   return result;
 });
 
 app.post("/api/v1/decision", async (req, reply) => {
+  const executionContext = await resolveExecutionContext(req);
+  if (!executionContext) return reply.code(403).send({ error: { code: "FORBIDDEN", message: "invalid organization, workspace or case context" } });
   const parsed = decisionRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ error: { code: "VALIDATION_ERROR", details: parsed.error.flatten() } });
   }
   const result = await orchestrator.decision(parsed.data);
-  await persist("DECISION", result);
+  await persist("DECISION", result, executionContext);
   return result;
 });
 
 app.get("/api/v1/executions/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
-  const row = await prisma.execution.findUnique({ where: { id } });
+  const row = await executionForRequest(req, id);
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND", message: "execution not found" } });
   return JSON.parse(row.payload);
 });
 
-app.get("/api/v1/executions", async () => {
-  const rows = await prisma.execution.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+app.get("/api/v1/executions", async (req, reply) => {
+  const context = await resolveExecutionContext(req);
+  if (!context) return reply.code(403).send({ error: { code: "FORBIDDEN" } });
+  const organizationId = context.organizationId;
+  const rows = await prisma.execution.findMany({
+    where: organizationId ? { organizationId } : { userId: context.userId, organizationId: null },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
   return rows.map((r: typeof rows[number]) => ({ id: r.id, engine: r.engine, status: r.status, createdAt: r.createdAt }));
 });
 
@@ -132,6 +324,8 @@ app.get("/api/v1/claims/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.claimRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
@@ -139,6 +333,8 @@ app.get("/api/v1/evidence/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.evidenceRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
@@ -146,6 +342,8 @@ app.get("/api/v1/graphs/:id", async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const row = await prisma.graphRow.findUnique({ where: { id } });
   if (!row) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
+  const execution = await executionForRequest(req, row.executionId);
+  if (!execution) return reply.code(404).send({ error: { code: "NOT_FOUND" } });
   return JSON.parse(row.json);
 });
 
@@ -212,7 +410,8 @@ app.get("/api/v1/calibration", async () => {
 });
 
 app.get("/api/v1/settings", async () => ({
-  authRequired,
+  authRequired: authRequired || productAuthRequired,
+  productAuthRequired,
   llmConfigured: Boolean(process.env.LLM_API_KEY),
   webSearchProvider: process.env.WEB_SEARCH_PROVIDER ?? "none",
   maxVerificationRounds: Number(process.env.MAX_VERIFICATION_ROUNDS ?? 2),
@@ -220,7 +419,11 @@ app.get("/api/v1/settings", async () => ({
   wikipediaEnabled: true,
 }));
 
-async function persist(engine: string, result: { executionId: string; requestId?: string; status?: string; claims?: unknown[]; evidence?: unknown[]; graph?: { id: string } }) {
+async function persist(
+  engine: string,
+  result: { executionId: string; requestId?: string; status?: string; claims?: unknown[]; evidence?: unknown[]; graph?: { id: string } },
+  context: { userId?: string; organizationId?: string; workspaceId?: string; caseId?: string },
+) {
   const payload = JSON.stringify(result);
   await prisma.execution.create({
     data: {
@@ -229,6 +432,10 @@ async function persist(engine: string, result: { executionId: string; requestId?
       engine,
       status: result.status ?? "UNKNOWN",
       payload,
+      userId: context.userId,
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      caseId: context.caseId,
     },
   });
   for (const c of result.claims ?? []) {
