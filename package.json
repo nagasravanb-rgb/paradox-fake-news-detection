@@ -1,0 +1,31 @@
+{
+  "name": "paradox",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PARADOX — Evidence-Driven Intelligent Engine",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@paradox/api",
+    "dev:web": "npm run dev --workspace=@paradox/web",
+    "dev:api": "npm run dev --workspace=@paradox/api",
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "npm run prisma:generate --workspace=@paradox/api",
+    "db:migrate": "npm run prisma:migrate --workspace=@paradox/api",
+    "db:push": "npm run prisma:push --workspace=@paradox/api"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
