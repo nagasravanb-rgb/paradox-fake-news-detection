@@ -1,0 +1,13 @@
+{
+  "name": "@paradox/research",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@paradox/shared": "0.1.0",
+    "@paradox/evidence": "0.1.0",
+    "@paradox/providers": "0.1.0",
+    "@paradox/verification": "0.1.0"
+  }
+}
